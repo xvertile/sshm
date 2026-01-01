@@ -448,6 +448,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case openRemoteBrowserMsg:
+		// Open the remote browser as a sub-view (not a nested program)
+		m.remoteBrowserForm = NewRemoteBrowser(msg.host, msg.startPath, msg.configFile, msg.mode, m.styles, m.width, m.height)
+		m.viewMode = ViewRemoteBrowser
+		return m, m.remoteBrowserForm.Init()
+
+	case remoteBrowserResultMsg:
+		// Remote browser completed - route result back to quick transfer
+		m.remoteBrowserForm = nil
+		m.viewMode = ViewQuickTransfer
+		if m.quickTransferForm != nil {
+			// Convert to quickRemotePickedMsg
+			pickedMsg := quickRemotePickedMsg{path: msg.path, selected: msg.selected}
+			var newForm *quickTransferModel
+			newForm, cmd = m.quickTransferForm.Update(pickedMsg)
+			m.quickTransferForm = newForm
+			return m, cmd
+		}
+		return m, nil
+
+	case remoteBrowserLoadedMsg, remoteBrowserSearchMsg, searchDebounceMsg:
+		// Route remote browser async messages to the form
+		if m.viewMode == ViewRemoteBrowser && m.remoteBrowserForm != nil {
+			var newForm *remoteBrowserModel
+			newForm, cmd = m.remoteBrowserForm.Update(msg)
+			m.remoteBrowserForm = newForm
+			return m, cmd
+		}
+		return m, nil
+
 	case helpCloseMsg:
 		// Close help: return to list view
 		m.viewMode = ViewList
@@ -505,6 +535,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var newForm *quickTransferModel
 				newForm, cmd = m.quickTransferForm.Update(msg)
 				m.quickTransferForm = newForm
+				return m, cmd
+			}
+		case ViewRemoteBrowser:
+			if m.remoteBrowserForm != nil {
+				var newForm *remoteBrowserModel
+				newForm, cmd = m.remoteBrowserForm.Update(msg)
+				m.remoteBrowserForm = newForm
 				return m, cmd
 			}
 		case ViewHelp:

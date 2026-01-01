@@ -8,7 +8,6 @@ import (
 
 	"github.com/Gu1llaum-3/sshm/internal/transfer"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // BrowserMode defines whether we're selecting files or directories
@@ -374,26 +373,20 @@ func (m *remoteBrowserModel) Update(msg tea.Msg) (*remoteBrowserModel, tea.Cmd) 
 			file := m.visibleFiles[m.cursor]
 
 			if file.IsDir {
-				if m.mode == BrowseDirectories {
-					// If browsing for directories and selected a dir, offer to select it
-					// For now, enter the directory; 's' will select current dir
-					m.loading = true
-					return m, m.loadDirectory(file.Path)
-				}
 				// Enter directory
 				m.loading = true
 				return m, m.loadDirectory(file.Path)
-			} else {
-				// File selected
-				if m.mode == BrowseFiles {
-					if m.session != nil {
-						m.session.Close()
-					}
-					return m, func() tea.Msg {
-						return remoteBrowserResultMsg{path: file.Path, selected: true}
-					}
+			}
+			// File selected
+			if m.mode == BrowseFiles {
+				if m.session != nil {
+					m.session.Close()
+				}
+				return m, func() tea.Msg {
+					return remoteBrowserResultMsg{path: file.Path, selected: true}
 				}
 			}
+			return m, nil
 
 		case "s", " ":
 			// Select current directory (for BrowseDirectories mode)
@@ -410,6 +403,7 @@ func (m *remoteBrowserModel) Update(msg tea.Msg) (*remoteBrowserModel, tea.Cmd) 
 					return remoteBrowserResultMsg{path: path, selected: true}
 				}
 			}
+			return m, nil
 
 		case "up", "k":
 			if m.cursor > 0 {
@@ -440,6 +434,7 @@ func (m *remoteBrowserModel) Update(msg tea.Msg) (*remoteBrowserModel, tea.Cmd) 
 				m.loading = true
 				return m, m.loadDirectory(parent)
 			}
+			return m, nil
 
 		case "~":
 			// Go to home directory
@@ -452,6 +447,7 @@ func (m *remoteBrowserModel) Update(msg tea.Msg) (*remoteBrowserModel, tea.Cmd) 
 				m.loading = true
 				return m, m.loadDirectory(m.visibleFiles[m.cursor].Path)
 			}
+			return m, nil
 		}
 	}
 
@@ -459,44 +455,40 @@ func (m *remoteBrowserModel) Update(msg tea.Msg) (*remoteBrowserModel, tea.Cmd) 
 }
 
 func (m *remoteBrowserModel) View() string {
-	var sections []string
+	var b strings.Builder
 
 	// Title
-	title := fmt.Sprintf("📂 Remote Browser: %s", m.host)
-	sections = append(sections, m.styles.Header.Render(title))
+	b.WriteString(m.styles.Header.Render(fmt.Sprintf("📂 Remote Browser: %s", m.host)))
+	b.WriteString("\n")
 
 	// Current path or search mode indicator
-	pathStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Bold(true)
 	if m.searchMode {
-		searchStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 		cursor := "_"
 		if m.loading {
 			cursor = ""
 		}
-		searchPrompt := fmt.Sprintf("  🔍 Search: %s%s", m.searchQuery, cursor)
 		if len(m.searchQuery) < 3 {
-			searchPrompt = fmt.Sprintf("  🔍 Search: %s%s (type %d more)", m.searchQuery, cursor, 3-len(m.searchQuery))
+			b.WriteString(fmt.Sprintf("  🔍 Search: %s%s (type %d more)\n", m.searchQuery, cursor, 3-len(m.searchQuery)))
+		} else {
+			b.WriteString(fmt.Sprintf("  🔍 Search: %s%s\n", m.searchQuery, cursor))
 		}
-		sections = append(sections, searchStyle.Render(searchPrompt))
-		sections = append(sections, m.styles.HelpText.Render("  in: "+m.currentDir))
+		b.WriteString("  in: " + m.currentDir + "\n")
 	} else {
-		sections = append(sections, pathStyle.Render("  "+m.currentDir))
+		b.WriteString(m.styles.DirStyle.Render("  "+m.currentDir) + "\n")
 	}
-	sections = append(sections, "")
+	b.WriteString("\n")
 
 	// Error message
 	if m.err != "" {
-		sections = append(sections, m.styles.Error.Render("Error: "+m.err))
-		sections = append(sections, "")
+		b.WriteString(m.styles.Error.Render("Error: "+m.err) + "\n\n")
 	}
 
-	// Loading indicator
+	// Loading indicator or file list
 	if m.loading {
-		loadingStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 		if m.searchMode {
-			sections = append(sections, loadingStyle.Render("  Searching..."))
+			b.WriteString("  Searching...\n")
 		} else {
-			sections = append(sections, loadingStyle.Render("  Loading..."))
+			b.WriteString("  Loading...\n")
 		}
 	} else {
 		// Choose which file list to display
@@ -504,22 +496,18 @@ func (m *remoteBrowserModel) View() string {
 		if m.searchMode && len(m.searchFiles) > 0 {
 			displayFiles = m.searchFiles
 		} else if m.searchMode && len(m.searchQuery) >= 3 && m.searchTriggered && len(m.searchFiles) == 0 {
-			// No results (only show after search completed)
-			noResultsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243")).Italic(true)
-			sections = append(sections, noResultsStyle.Render("  No files found matching '"+m.searchQuery+"'"))
+			b.WriteString("  No files found\n")
 			displayFiles = nil
 		} else if m.searchMode {
 			displayFiles = nil
 		}
 
 		if displayFiles != nil {
-			// File list
-			visibleHeight := m.height - 12 // Account for header, footer, etc.
+			visibleHeight := m.height - 10
 			if visibleHeight < 5 {
 				visibleHeight = 5
 			}
 
-			// Calculate scroll window
 			start := 0
 			if m.cursor >= visibleHeight {
 				start = m.cursor - visibleHeight + 1
@@ -531,139 +519,95 @@ func (m *remoteBrowserModel) View() string {
 
 			for i := start; i < end; i++ {
 				file := displayFiles[i]
-				// In search mode, show full path instead of just name
 				if m.searchMode {
-					line := m.renderSearchResultLine(file, i == m.cursor)
-					sections = append(sections, line)
+					b.WriteString(m.renderSearchResultLine(file, i == m.cursor) + "\n")
 				} else {
-					line := m.renderFileLine(file, i == m.cursor)
-					sections = append(sections, line)
+					b.WriteString(m.renderFileLine(file, i == m.cursor) + "\n")
 				}
 			}
 
-			// Show scroll indicator if needed
 			if len(displayFiles) > visibleHeight {
-				scrollInfo := fmt.Sprintf("  [%d/%d]", m.cursor+1, len(displayFiles))
-				sections = append(sections, m.styles.HelpText.Render(scrollInfo))
+				b.WriteString(fmt.Sprintf("  [%d/%d]\n", m.cursor+1, len(displayFiles)))
 			}
 		}
 	}
 
-	sections = append(sections, "")
+	b.WriteString("\n")
 
-	// Hidden files indicator
+	// Hidden files indicator and help
 	if !m.searchMode {
-		hiddenStatus := "hidden: off"
 		if m.showHidden {
-			hiddenStatus = "hidden: on"
+			b.WriteString("  [hidden: on]\n")
+		} else {
+			b.WriteString("  [hidden: off]\n")
 		}
-		sections = append(sections, m.styles.HelpText.Render("  ["+hiddenStatus+"]"))
 	}
 
-	// Help text
-	var helpText string
 	if m.searchMode {
-		helpText = " Type to search | ↑/↓: navigate | Enter: select | Esc: cancel search"
+		b.WriteString(" ↑/↓: navigate | Enter: select | Esc: back\n")
 	} else if m.mode == BrowseDirectories {
-		helpText = " ↑/↓: navigate | Enter: open | s: select | .: toggle hidden | Esc: cancel"
+		b.WriteString(" ↑/↓: navigate | Enter: open | s: select | .: hidden | Esc: cancel\n")
 	} else {
-		helpText = " ↑/↓: navigate | Enter: select | /: search | .: toggle hidden | Esc: cancel"
+		b.WriteString(" ↑/↓: navigate | Enter: select | /: search | .: hidden | Esc: cancel\n")
 	}
-	sections = append(sections, m.styles.HelpText.Render(helpText))
 
-	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
-
-	return lipgloss.Place(
-		m.width,
-		m.height,
-		lipgloss.Center,
-		lipgloss.Center,
-		m.styles.FormContainer.Render(content),
-	)
+	return b.String()
 }
 
+// ANSI escape codes for fast rendering (avoid lipgloss.Render in hot loop)
+const (
+	ansiReset    = "\x1b[0m"
+	ansiSelected = "\x1b[38;5;229;48;2;0;173;216m" // white on cyan (matches Selected style)
+	ansiDir      = "\x1b[38;5;39m"                 // blue (matches DirStyle)
+)
+
 func (m *remoteBrowserModel) renderFileLine(file transfer.RemoteFile, selected bool) string {
-	icon := "📄"
-	if file.IsDir {
-		icon = "📁"
-	}
+	var icon, name string
+
 	if file.Name == ".." {
-		icon = "⬆️"
+		icon = "⬆"
+		name = ".."
+	} else if file.IsDir {
+		icon = "📁"
+		name = file.Name + "/"
+	} else {
+		icon = "  "
+		name = file.Name
 	}
 
-	name := file.Name
-	if file.IsDir && file.Name != ".." {
-		name = name + "/"
-	}
-
-	// Truncate long names
-	maxLen := m.width - 20
-	if maxLen < 20 {
-		maxLen = 20
-	}
-	if len(name) > maxLen {
-		name = name[:maxLen-3] + "..."
-	}
-
-	// Size display for files
-	sizeStr := ""
-	if !file.IsDir && file.Size > 0 {
-		sizeStr = formatSize(file.Size)
-	}
-
-	line := fmt.Sprintf("  %s %s", icon, name)
-	if sizeStr != "" {
-		padding := maxLen - len(name) + 2
-		if padding < 1 {
-			padding = 1
-		}
-		line += strings.Repeat(" ", padding) + sizeStr
+	// Simple truncation
+	if len(name) > 40 {
+		name = name[:37] + "..."
 	}
 
 	if selected {
-		return m.styles.Selected.Render(line)
+		return ansiSelected + "  " + icon + " " + name + ansiReset
 	}
-
 	if file.IsDir {
-		return m.styles.DirStyle.Render(line)
+		return ansiDir + "  " + icon + " " + name + ansiReset
 	}
-
-	return line
+	return "  " + icon + " " + name
 }
 
 // renderSearchResultLine renders a search result showing the full path
 func (m *remoteBrowserModel) renderSearchResultLine(file transfer.RemoteFile, selected bool) string {
-	icon := "📄"
-	if file.IsDir {
-		icon = "📁"
+	icon := "📁"
+	if !file.IsDir {
+		icon = "  "
 	}
 
-	// Show the full path for search results
-	displayPath := file.Path
-	if file.IsDir {
-		displayPath = displayPath + "/"
+	path := file.Path
+	if len(path) > 50 {
+		path = "..." + path[len(path)-47:]
 	}
-
-	// Truncate long paths from the beginning
-	maxLen := m.width - 10
-	if maxLen < 30 {
-		maxLen = 30
-	}
-	if len(displayPath) > maxLen {
-		displayPath = "..." + displayPath[len(displayPath)-maxLen+3:]
-	}
-
-	line := fmt.Sprintf("  %s %s", icon, displayPath)
 
 	if selected {
-		return m.styles.Selected.Render(line)
+		return ansiSelected + "  " + icon + " " + path + ansiReset
 	}
-
 	if file.IsDir {
-		return m.styles.DirStyle.Render(line)
+		return ansiDir + "  " + icon + " " + path + ansiReset
 	}
-
-	return line
+	return "  " + icon + " " + path
 }
 
 func formatSize(size int64) string {
@@ -698,9 +642,12 @@ func (m standaloneRemoteBrowser) Init() tea.Cmd {
 func (m standaloneRemoteBrowser) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.remoteBrowserModel.width = msg.Width
-		m.remoteBrowserModel.height = msg.Height
-		m.remoteBrowserModel.styles = NewStyles(msg.Width)
+		// Only update if dimensions actually changed
+		if m.remoteBrowserModel.width != msg.Width || m.remoteBrowserModel.height != msg.Height {
+			m.remoteBrowserModel.width = msg.Width
+			m.remoteBrowserModel.height = msg.Height
+			m.remoteBrowserModel.styles = NewStyles(msg.Width)
+		}
 		return m, nil
 
 	case remoteBrowserResultMsg:
@@ -726,7 +673,9 @@ func RunRemoteBrowser(host, startPath, configFile string, mode BrowserMode) (str
 	browser := NewRemoteBrowser(host, startPath, configFile, mode, styles, 80, 24)
 	m := standaloneRemoteBrowser{browser}
 
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m,
+		tea.WithAltScreen(),
+	)
 	finalModel, err := p.Run()
 	if err != nil {
 		return "", false, err

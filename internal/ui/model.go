@@ -42,6 +42,7 @@ const (
 	ViewPortForward
 	ViewTransfer
 	ViewQuickTransfer
+	ViewRemoteBrowser
 	ViewHelp
 	ViewFileSelector
 )
@@ -98,6 +99,7 @@ type Model struct {
 	portForwardForm   *portForwardModel
 	transferForm      *transferFormModel
 	quickTransferForm *quickTransferModel
+	remoteBrowserForm *remoteBrowserModel
 	helpForm          *helpModel
 	fileSelectorForm  *fileSelectorModel
 

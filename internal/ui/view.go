@@ -43,6 +43,10 @@ func (m Model) View() string {
 		if m.quickTransferForm != nil {
 			return m.quickTransferForm.View()
 		}
+	case ViewRemoteBrowser:
+		if m.remoteBrowserForm != nil {
+			return m.remoteBrowserForm.View()
+		}
 	case ViewHelp:
 		if m.helpForm != nil {
 			return m.helpForm.View()

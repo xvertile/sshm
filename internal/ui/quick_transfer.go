@@ -59,6 +59,14 @@ type quickRemotePickedMsg struct {
 	selected bool
 }
 
+// openRemoteBrowserMsg requests the main app to open the remote browser
+type openRemoteBrowserMsg struct {
+	host       string
+	startPath  string
+	configFile string
+	mode       BrowserMode
+}
+
 // NewQuickTransfer creates a new quick transfer model
 func NewQuickTransfer(hostName string, styles Styles, width, height int, configFile string) *quickTransferModel {
 	historyManager, _ := history.NewHistoryManager()
@@ -174,20 +182,22 @@ func (m *quickTransferModel) openLocalPicker() tea.Cmd {
 }
 
 func (m *quickTransferModel) openRemotePicker() tea.Cmd {
+	// Send a message to the main app to open the remote browser
+	// This avoids nested tea.Program issues
+	var mode BrowserMode
+	if m.direction == transfer.Upload {
+		mode = BrowseDirectories
+	} else {
+		mode = BrowseFiles
+	}
+
 	return func() tea.Msg {
-		var mode BrowserMode
-		if m.direction == transfer.Upload {
-			mode = BrowseDirectories
-		} else {
-			mode = BrowseFiles
+		return openRemoteBrowserMsg{
+			host:       m.hostName,
+			startPath:  "~",
+			configFile: m.configFile,
+			mode:       mode,
 		}
-
-		path, selected, err := RunRemoteBrowser(m.hostName, "~", m.configFile, mode)
-		if err != nil || !selected {
-			return quickRemotePickedMsg{selected: false}
-		}
-
-		return quickRemotePickedMsg{path: path, selected: true}
 	}
 }
 
@@ -336,6 +346,16 @@ func (m standaloneQuickTransfer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case quickTransferCancelMsg:
 		return m, tea.Quit
+
+	case openRemoteBrowserMsg:
+		// Standalone mode: launch remote browser as external program
+		return m, func() tea.Msg {
+			path, selected, err := RunRemoteBrowser(msg.host, msg.startPath, msg.configFile, msg.mode)
+			if err != nil || !selected {
+				return quickRemotePickedMsg{selected: false}
+			}
+			return quickRemotePickedMsg{path: path, selected: true}
+		}
 	}
 
 	newModel, cmd := m.quickTransferModel.Update(msg)
