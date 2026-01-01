@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -163,6 +164,65 @@ func (m *remoteBrowserModel) filterFiles() {
 	}
 }
 
+// filterSearchResults filters existing search results by current query (for backspace)
+func (m *remoteBrowserModel) filterSearchResults() {
+	if len(m.searchQuery) < 3 {
+		return
+	}
+	query := strings.ToLower(m.searchQuery)
+	var filtered []transfer.RemoteFile
+	for _, f := range m.searchFiles {
+		if strings.Contains(strings.ToLower(f.Name), query) ||
+			strings.Contains(strings.ToLower(f.Path), query) {
+			filtered = append(filtered, f)
+		}
+	}
+	m.searchFiles = filtered
+	if m.cursor >= len(m.searchFiles) {
+		m.cursor = len(m.searchFiles) - 1
+		if m.cursor < 0 {
+			m.cursor = 0
+		}
+	}
+}
+
+// sortSearchResults sorts results: exact filename matches first, then by path length
+func (m *remoteBrowserModel) sortSearchResults() {
+	if len(m.searchFiles) == 0 || len(m.searchQuery) < 3 {
+		return
+	}
+	query := strings.ToLower(m.searchQuery)
+
+	sort.SliceStable(m.searchFiles, func(i, j int) bool {
+		fi, fj := m.searchFiles[i], m.searchFiles[j]
+		nameI, nameJ := strings.ToLower(fi.Name), strings.ToLower(fj.Name)
+
+		// Exact filename match gets highest priority
+		exactI := nameI == query
+		exactJ := nameJ == query
+		if exactI != exactJ {
+			return exactI
+		}
+
+		// Filename starts with query
+		startsI := strings.HasPrefix(nameI, query)
+		startsJ := strings.HasPrefix(nameJ, query)
+		if startsI != startsJ {
+			return startsI
+		}
+
+		// Filename contains query (vs only path contains)
+		containsI := strings.Contains(nameI, query)
+		containsJ := strings.Contains(nameJ, query)
+		if containsI != containsJ {
+			return containsI
+		}
+
+		// Shorter paths first (less nested = more relevant)
+		return len(fi.Path) < len(fj.Path)
+	})
+}
+
 func (m *remoteBrowserModel) Update(msg tea.Msg) (*remoteBrowserModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case remoteBrowserLoadedMsg:
@@ -193,6 +253,7 @@ func (m *remoteBrowserModel) Update(msg tea.Msg) (*remoteBrowserModel, tea.Cmd) 
 			return m, nil
 		}
 		m.searchFiles = msg.files
+		m.sortSearchResults()
 		m.cursor = 0
 		m.err = ""
 		return m, nil
@@ -240,8 +301,8 @@ func (m *remoteBrowserModel) Update(msg tea.Msg) (*remoteBrowserModel, tea.Cmd) 
 		// Handle search mode input
 		if m.searchMode {
 			switch msg.String() {
-			case "esc":
-				// Exit search mode
+			case "esc", "ctrl+c":
+				// Exit search mode (ctrl+c exits search, not the app)
 				m.searchMode = false
 				m.searchQuery = ""
 				m.searchFiles = nil
@@ -295,9 +356,12 @@ func (m *remoteBrowserModel) Update(msg tea.Msg) (*remoteBrowserModel, tea.Cmd) 
 						m.searchFiles = nil
 						m.pendingSearch = ""
 					} else {
-						// Schedule debounced search
-						m.pendingSearch = m.searchQuery
-						return m, m.scheduleSearch(m.searchQuery)
+						// Filter existing results locally instead of new search
+						// This makes backspace instant
+						if len(m.searchFiles) > 0 {
+							m.filterSearchResults()
+						}
+						m.pendingSearch = ""
 					}
 				}
 				return m, nil
