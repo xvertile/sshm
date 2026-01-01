@@ -17,7 +17,8 @@ type QuickTransferState int
 
 const (
 	QTStateChooseDirection QuickTransferState = iota
-	QTStateChooseUploadType // File or Folder selection (only for uploads)
+	QTStateChooseUploadType   // File or Folder selection (only for uploads)
+	QTStateChooseDownloadType // File or Folder selection (for downloads)
 	QTStateSelectingLocal
 	QTStateSelectingRemote
 	QTStateTransferring
@@ -29,6 +30,7 @@ type quickTransferModel struct {
 	state            QuickTransferState
 	direction        transfer.Direction
 	uploadType       UploadType // File or Folder (reuse from transfer_form.go)
+	downloadType     UploadType // File or Folder for downloads (reuses UploadType enum)
 	selectedIdx      int        // 0 = upload/file, 1 = download/folder (for arrow key nav)
 	hostName         string
 	configFile       string
@@ -156,8 +158,9 @@ func (m *quickTransferModel) Update(msg tea.Msg) (*quickTransferModel, tea.Cmd) 
 				return m, nil
 			case "d", "D", "2":
 				m.direction = transfer.Download
-				m.state = QTStateSelectingRemote
-				return m, m.openRemotePicker()
+				m.selectedIdx = 0 // Reset for download type selection
+				m.state = QTStateChooseDownloadType
+				return m, nil
 			case "left", "h", "up", "k":
 				m.selectedIdx = 0 // Upload
 				return m, nil
@@ -175,8 +178,9 @@ func (m *quickTransferModel) Update(msg tea.Msg) (*quickTransferModel, tea.Cmd) 
 					return m, nil
 				} else {
 					m.direction = transfer.Download
-					m.state = QTStateSelectingRemote
-					return m, m.openRemotePicker()
+					m.selectedIdx = 0 // Reset for download type selection
+					m.state = QTStateChooseDownloadType
+					return m, nil
 				}
 			case "q":
 				return m, func() tea.Msg { return quickTransferCancelMsg{} }
@@ -219,6 +223,46 @@ func (m *quickTransferModel) Update(msg tea.Msg) (*quickTransferModel, tea.Cmd) 
 				// Go back to direction selection
 				m.state = QTStateChooseDirection
 				m.selectedIdx = 0
+				return m, nil
+			}
+
+		case QTStateChooseDownloadType:
+			// Handle escape to go back
+			if msg.Type == tea.KeyEsc {
+				m.state = QTStateChooseDirection
+				m.selectedIdx = 1 // Keep download selected
+				return m, nil
+			}
+			switch msg.String() {
+			case "f", "F", "1":
+				m.downloadType = UploadFile
+				m.state = QTStateSelectingRemote
+				return m, m.openRemotePicker()
+			case "d", "D", "2":
+				m.downloadType = UploadFolder
+				m.state = QTStateSelectingRemote
+				return m, m.openRemotePicker()
+			case "left", "h", "up", "k":
+				m.selectedIdx = 0 // File
+				return m, nil
+			case "right", "l", "down", "j":
+				m.selectedIdx = 1 // Folder
+				return m, nil
+			case "tab":
+				m.selectedIdx = (m.selectedIdx + 1) % 2
+				return m, nil
+			case "enter", " ":
+				if m.selectedIdx == 0 {
+					m.downloadType = UploadFile
+				} else {
+					m.downloadType = UploadFolder
+				}
+				m.state = QTStateSelectingRemote
+				return m, m.openRemotePicker()
+			case "q":
+				// Go back to direction selection
+				m.state = QTStateChooseDirection
+				m.selectedIdx = 1 // Keep download selected
 				return m, nil
 			}
 
@@ -279,7 +323,12 @@ func (m *quickTransferModel) openRemotePicker() tea.Cmd {
 	if m.direction == transfer.Upload {
 		mode = BrowseDirectories
 	} else {
-		mode = BrowseFiles
+		// Download: use directories mode for folder downloads, files mode for file downloads
+		if m.downloadType == UploadFolder {
+			mode = BrowseDirectories
+		} else {
+			mode = BrowseFiles
+		}
 	}
 
 	return func() tea.Msg {
@@ -303,11 +352,15 @@ func (m *quickTransferModel) executeTransfer() tea.Cmd {
 			recursive = true
 		}
 	} else {
-		// Download: if local path is a directory, append the remote filename
+		// Download: if local path is a directory, append the remote filename/foldername
 		info, err := os.Stat(localPath)
 		if err == nil && info.IsDir() {
 			remoteFilename := filepath.Base(m.remotePath)
 			localPath = filepath.Join(localPath, remoteFilename)
+		}
+		// Set recursive for folder downloads
+		if m.downloadType == UploadFolder {
+			recursive = true
 		}
 	}
 
@@ -392,6 +445,23 @@ func (m *quickTransferModel) View() string {
 			sections = append(sections, "")
 			sections = append(sections, m.styles.HelpText.Render("←/→ or Tab: switch • Enter: confirm • Esc: back"))
 
+		case QTStateChooseDownloadType:
+			sections = append(sections, m.styles.Label.Render("What do you want to download?"))
+			sections = append(sections, "")
+
+			var fileBtn, folderBtn string
+			if m.selectedIdx == 0 {
+				fileBtn = m.styles.ActiveTab.Render("  📄 File  ")
+				folderBtn = m.styles.InactiveTab.Render("  📁 Folder  ")
+			} else {
+				fileBtn = m.styles.InactiveTab.Render("  📄 File  ")
+				folderBtn = m.styles.ActiveTab.Render("  📁 Folder  ")
+			}
+			buttons := lipgloss.JoinHorizontal(lipgloss.Center, fileBtn, "    ", folderBtn)
+			sections = append(sections, buttons)
+			sections = append(sections, "")
+			sections = append(sections, m.styles.HelpText.Render("←/→ or Tab: switch • Enter: confirm • Esc: back"))
+
 		case QTStateSelectingLocal:
 			if m.direction == transfer.Upload {
 				if m.uploadType == UploadFolder {
@@ -410,7 +480,11 @@ func (m *quickTransferModel) View() string {
 			if m.direction == transfer.Upload {
 				sections = append(sections, m.styles.Label.Render("Select remote destination..."))
 			} else {
-				sections = append(sections, m.styles.Label.Render("Select remote file to download..."))
+				if m.downloadType == UploadFolder {
+					sections = append(sections, m.styles.Label.Render("Select remote folder to download..."))
+				} else {
+					sections = append(sections, m.styles.Label.Render("Select remote file to download..."))
+				}
 			}
 			sections = append(sections, "")
 			if m.localPath != "" {
@@ -423,7 +497,11 @@ func (m *quickTransferModel) View() string {
 		case QTStateTransferring:
 			direction := "Uploading"
 			if m.direction == transfer.Download {
-				direction = "Downloading"
+				if m.downloadType == UploadFolder {
+					direction = "Downloading folder"
+				} else {
+					direction = "Downloading"
+				}
 			}
 			sections = append(sections, m.styles.Label.Render(direction+"..."))
 			sections = append(sections, "")
