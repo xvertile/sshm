@@ -18,14 +18,24 @@ import (
 // Input field indices for transfer form
 const (
 	tfDirectionInput = iota
+	tfUploadTypeInput // File or Folder toggle (only shown for uploads)
 	tfLocalPathInput
 	tfRemotePathInput
+)
+
+// UploadType determines whether to upload a file or folder
+type UploadType int
+
+const (
+	UploadFile UploadType = iota
+	UploadFolder
 )
 
 type transferFormModel struct {
 	inputs         []textinput.Model
 	focused        int
 	direction      transfer.Direction
+	uploadType     UploadType // File or Folder
 	hostName       string
 	err            string
 	styles         Styles
@@ -59,13 +69,18 @@ func NewTransferForm(hostName string, styles Styles, width, height int, configFi
 	// Initialize history manager
 	historyManager, _ := history.NewHistoryManager()
 
-	inputs := make([]textinput.Model, 3)
+	inputs := make([]textinput.Model, 4)
 
 	// Direction input (display only, controlled by arrow keys)
 	inputs[tfDirectionInput] = textinput.New()
 	inputs[tfDirectionInput].Placeholder = "Use ←/→ to change direction"
 	inputs[tfDirectionInput].Focus()
 	inputs[tfDirectionInput].Width = 40
+
+	// Upload type input (display only, controlled by arrow keys) - only used for uploads
+	inputs[tfUploadTypeInput] = textinput.New()
+	inputs[tfUploadTypeInput].Placeholder = "Use ←/→ to change type"
+	inputs[tfUploadTypeInput].Width = 40
 
 	// Get current working directory for default local path
 	cwd, _ := os.Getwd()
@@ -86,6 +101,7 @@ func NewTransferForm(hostName string, styles Styles, width, height int, configFi
 		inputs:         inputs,
 		focused:        0,
 		direction:      direction,
+		uploadType:     UploadFile, // Default to file
 		hostName:       hostName,
 		styles:         styles,
 		width:          width,
@@ -134,13 +150,18 @@ func (m *transferFormModel) Init() tea.Cmd {
 
 func (m *transferFormModel) openLocalFilePicker() tea.Cmd {
 	return func() tea.Msg {
-		// Determine picker mode based on direction
+		// Determine picker mode based on direction and upload type
 		var mode transfer.PickerMode
 		var title string
 
 		if m.direction == transfer.Upload {
-			mode = transfer.PickFile
-			title = "Select file to upload"
+			if m.uploadType == UploadFolder {
+				mode = transfer.PickDirectory
+				title = "Select folder to upload"
+			} else {
+				mode = transfer.PickFile
+				title = "Select file to upload"
+			}
 		} else {
 			mode = transfer.PickDirectory
 			title = "Select download destination"
@@ -200,6 +221,32 @@ func (m *transferFormModel) openRemoteFilePicker() tea.Cmd {
 	}
 }
 
+// getNextFocusField returns the next focusable field index
+func (m *transferFormModel) getNextFocusField(current int) int {
+	next := current + 1
+	// Skip upload type field if in download mode
+	if next == tfUploadTypeInput && m.direction == transfer.Download {
+		next++
+	}
+	if next > tfRemotePathInput {
+		next = tfRemotePathInput
+	}
+	return next
+}
+
+// getPrevFocusField returns the previous focusable field index
+func (m *transferFormModel) getPrevFocusField(current int) int {
+	prev := current - 1
+	// Skip upload type field if in download mode
+	if prev == tfUploadTypeInput && m.direction == transfer.Download {
+		prev--
+	}
+	if prev < tfDirectionInput {
+		prev = tfDirectionInput
+	}
+	return prev
+}
+
 func (m *transferFormModel) Update(msg tea.Msg) (*transferFormModel, tea.Cmd) {
 	var cmd tea.Cmd
 
@@ -223,6 +270,13 @@ func (m *transferFormModel) Update(msg tea.Msg) (*transferFormModel, tea.Cmd) {
 			// If we're on direction, move to next field
 			if m.focused == tfDirectionInput {
 				m.inputs[m.focused].Blur()
+				m.focused = m.getNextFocusField(m.focused)
+				m.inputs[m.focused].Focus()
+				return m, textinput.Blink
+			}
+			// If on upload type, move to local path
+			if m.focused == tfUploadTypeInput {
+				m.inputs[m.focused].Blur()
 				m.focused = tfLocalPathInput
 				m.inputs[m.focused].Focus()
 				return m, textinput.Blink
@@ -238,17 +292,19 @@ func (m *transferFormModel) Update(msg tea.Msg) (*transferFormModel, tea.Cmd) {
 			return m, m.submitForm()
 
 		case "shift+tab", "up":
-			if m.focused > 0 {
+			prev := m.getPrevFocusField(m.focused)
+			if prev != m.focused {
 				m.inputs[m.focused].Blur()
-				m.focused--
+				m.focused = prev
 				m.inputs[m.focused].Focus()
 				return m, textinput.Blink
 			}
 
 		case "tab", "down":
-			if m.focused < len(m.inputs)-1 {
+			next := m.getNextFocusField(m.focused)
+			if next != m.focused {
 				m.inputs[m.focused].Blur()
-				m.focused++
+				m.focused = next
 				m.inputs[m.focused].Focus()
 				return m, textinput.Blink
 			}
@@ -264,6 +320,15 @@ func (m *transferFormModel) Update(msg tea.Msg) (*transferFormModel, tea.Cmd) {
 					m.inputs[tfDirectionInput].SetValue("↑ Upload")
 				}
 				m.updatePlaceholders()
+				return m, nil
+			}
+			if m.focused == tfUploadTypeInput {
+				// Toggle upload type (File/Folder)
+				if m.uploadType == UploadFile {
+					m.uploadType = UploadFolder
+				} else {
+					m.uploadType = UploadFile
+				}
 				return m, nil
 			}
 
@@ -387,8 +452,38 @@ func (m *transferFormModel) View() string {
 	}
 	dirButtons := lipgloss.JoinHorizontal(lipgloss.Center, uploadBtn, "  ", downloadBtn)
 	sections = append(sections, dirButtons)
-	sections = append(sections, m.styles.HelpText.Render("Use ←/→ to change direction"))
+	if m.focused == tfDirectionInput {
+		sections = append(sections, m.styles.HelpText.Render("Use ←/→ to change direction"))
+	}
 	sections = append(sections, "")
+
+	// Upload type selector (only shown for uploads)
+	if m.direction == transfer.Upload {
+		typeLabel := "Upload Type:"
+		if m.focused == tfUploadTypeInput {
+			typeLabel = m.styles.FocusedLabel.Render(typeLabel)
+		} else {
+			typeLabel = m.styles.Label.Render(typeLabel)
+		}
+		sections = append(sections, typeLabel)
+
+		// File/Folder toggle buttons
+		fileBtn := " 📄 File "
+		folderBtn := " 📁 Folder "
+		if m.uploadType == UploadFile {
+			fileBtn = m.styles.ActiveTab.Render(fileBtn)
+			folderBtn = m.styles.InactiveTab.Render(folderBtn)
+		} else {
+			fileBtn = m.styles.InactiveTab.Render(fileBtn)
+			folderBtn = m.styles.ActiveTab.Render(folderBtn)
+		}
+		typeButtons := lipgloss.JoinHorizontal(lipgloss.Center, fileBtn, "  ", folderBtn)
+		sections = append(sections, typeButtons)
+		if m.focused == tfUploadTypeInput {
+			sections = append(sections, m.styles.HelpText.Render("Use ←/→ to change type"))
+		}
+		sections = append(sections, "")
+	}
 
 	// Local path
 	localLabel := "Local Path:"
@@ -402,7 +497,7 @@ func (m *transferFormModel) View() string {
 
 	// Show file picker hint when focused on local path
 	if m.focused == tfLocalPathInput && transfer.IsPickerAvailable() {
-		sections = append(sections, m.styles.HelpText.Render("Press 'o' to open file picker"))
+		sections = append(sections, m.styles.HelpText.Render("Press 'o' to browse"))
 	}
 	sections = append(sections, "")
 

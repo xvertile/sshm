@@ -17,6 +17,7 @@ type QuickTransferState int
 
 const (
 	QTStateChooseDirection QuickTransferState = iota
+	QTStateChooseUploadType // File or Folder selection (only for uploads)
 	QTStateSelectingLocal
 	QTStateSelectingRemote
 	QTStateTransferring
@@ -27,7 +28,8 @@ const (
 type quickTransferModel struct {
 	state            QuickTransferState
 	direction        transfer.Direction
-	selectedIdx      int // 0 = upload, 1 = download (for arrow key nav)
+	uploadType       UploadType // File or Folder (reuse from transfer_form.go)
+	selectedIdx      int        // 0 = upload/file, 1 = download/folder (for arrow key nav)
 	hostName         string
 	configFile       string
 	localPath        string
@@ -37,6 +39,7 @@ type quickTransferModel struct {
 	height           int
 	err              string
 	historyManager   *history.HistoryManager
+	runningTransfer  *transfer.RunningTransfer // For cancellation
 }
 
 // quickTransferDoneMsg signals transfer complete
@@ -130,13 +133,27 @@ func (m *quickTransferModel) Update(msg tea.Msg) (*quickTransferModel, tea.Cmd) 
 		return m, func() tea.Msg { return quickTransferCancelMsg{} }
 
 	case tea.KeyMsg:
+		// Global cancel with ctrl+c from any state
+		if msg.Type == tea.KeyCtrlC {
+			// Cancel running transfer if any
+			if m.runningTransfer != nil {
+				m.runningTransfer.Cancel()
+			}
+			return m, func() tea.Msg { return quickTransferCancelMsg{} }
+		}
+
 		switch m.state {
 		case QTStateChooseDirection:
+			// Handle escape to exit
+			if msg.Type == tea.KeyEsc {
+				return m, func() tea.Msg { return quickTransferCancelMsg{} }
+			}
 			switch msg.String() {
 			case "u", "U", "1":
 				m.direction = transfer.Upload
-				m.state = QTStateSelectingLocal
-				return m, m.openLocalPicker()
+				m.selectedIdx = 0 // Reset for upload type selection
+				m.state = QTStateChooseUploadType
+				return m, nil
 			case "d", "D", "2":
 				m.direction = transfer.Download
 				m.state = QTStateSelectingRemote
@@ -153,16 +170,70 @@ func (m *quickTransferModel) Update(msg tea.Msg) (*quickTransferModel, tea.Cmd) 
 			case "enter", " ":
 				if m.selectedIdx == 0 {
 					m.direction = transfer.Upload
-					m.state = QTStateSelectingLocal
-					return m, m.openLocalPicker()
+					m.selectedIdx = 0 // Reset for upload type selection
+					m.state = QTStateChooseUploadType
+					return m, nil
 				} else {
 					m.direction = transfer.Download
 					m.state = QTStateSelectingRemote
 					return m, m.openRemotePicker()
 				}
-			case "esc", "q", "ctrl+c":
+			case "q":
 				return m, func() tea.Msg { return quickTransferCancelMsg{} }
 			}
+
+		case QTStateChooseUploadType:
+			// Handle escape to go back
+			if msg.Type == tea.KeyEsc {
+				m.state = QTStateChooseDirection
+				m.selectedIdx = 0
+				return m, nil
+			}
+			switch msg.String() {
+			case "f", "F", "1":
+				m.uploadType = UploadFile
+				m.state = QTStateSelectingLocal
+				return m, m.openLocalPicker()
+			case "d", "D", "2":
+				m.uploadType = UploadFolder
+				m.state = QTStateSelectingLocal
+				return m, m.openLocalPicker()
+			case "left", "h", "up", "k":
+				m.selectedIdx = 0 // File
+				return m, nil
+			case "right", "l", "down", "j":
+				m.selectedIdx = 1 // Folder
+				return m, nil
+			case "tab":
+				m.selectedIdx = (m.selectedIdx + 1) % 2
+				return m, nil
+			case "enter", " ":
+				if m.selectedIdx == 0 {
+					m.uploadType = UploadFile
+				} else {
+					m.uploadType = UploadFolder
+				}
+				m.state = QTStateSelectingLocal
+				return m, m.openLocalPicker()
+			case "q":
+				// Go back to direction selection
+				m.state = QTStateChooseDirection
+				m.selectedIdx = 0
+				return m, nil
+			}
+
+		case QTStateSelectingLocal, QTStateSelectingRemote:
+			// While file picker is open, allow cancel
+			if msg.Type == tea.KeyEsc {
+				return m, func() tea.Msg { return quickTransferCancelMsg{} }
+			}
+			if msg.String() == "q" {
+				return m, func() tea.Msg { return quickTransferCancelMsg{} }
+			}
+
+		case QTStateTransferring:
+			// Transfer in progress - handled at top with ctrl+c
+			break
 
 		case QTStateDone:
 			// Any key exits
@@ -179,8 +250,13 @@ func (m *quickTransferModel) openLocalPicker() tea.Cmd {
 		var title string
 
 		if m.direction == transfer.Upload {
-			mode = transfer.PickFile
-			title = "Select file to upload"
+			if m.uploadType == UploadFolder {
+				mode = transfer.PickDirectory
+				title = "Select folder to upload"
+			} else {
+				mode = transfer.PickFile
+				title = "Select file to upload"
+			}
 		} else {
 			mode = transfer.PickDirectory
 			title = "Select download destination"
@@ -217,35 +293,39 @@ func (m *quickTransferModel) openRemotePicker() tea.Cmd {
 }
 
 func (m *quickTransferModel) executeTransfer() tea.Cmd {
+	localPath := m.localPath
+	recursive := false
+
+	if m.direction == transfer.Upload {
+		// Check if uploading a directory
+		info, err := os.Stat(localPath)
+		if err == nil && info.IsDir() {
+			recursive = true
+		}
+	} else {
+		// Download: if local path is a directory, append the remote filename
+		info, err := os.Stat(localPath)
+		if err == nil && info.IsDir() {
+			remoteFilename := filepath.Base(m.remotePath)
+			localPath = filepath.Join(localPath, remoteFilename)
+		}
+	}
+
+	req := &transfer.TransferRequest{
+		Host:       m.hostName,
+		Direction:  m.direction,
+		LocalPath:  localPath,
+		RemotePath: m.remotePath,
+		Recursive:  recursive,
+		ConfigFile: m.configFile,
+	}
+
+	// Start the transfer (non-blocking)
+	m.runningTransfer = req.StartTransfer()
+
+	// Return a command that waits for the transfer to complete
 	return func() tea.Msg {
-		localPath := m.localPath
-		recursive := false
-
-		if m.direction == transfer.Upload {
-			// Check if uploading a directory
-			info, err := os.Stat(localPath)
-			if err == nil && info.IsDir() {
-				recursive = true
-			}
-		} else {
-			// Download: if local path is a directory, append the remote filename
-			info, err := os.Stat(localPath)
-			if err == nil && info.IsDir() {
-				remoteFilename := filepath.Base(m.remotePath)
-				localPath = filepath.Join(localPath, remoteFilename)
-			}
-		}
-
-		req := &transfer.TransferRequest{
-			Host:       m.hostName,
-			Direction:  m.direction,
-			LocalPath:  localPath,
-			RemotePath: m.remotePath,
-			Recursive:  recursive,
-			ConfigFile: m.configFile,
-		}
-
-		result := req.ExecuteWithProgress()
+		result := <-m.runningTransfer.Done()
 		if !result.Success {
 			return quickTransferDoneMsg{success: false, err: result.Error}
 		}
@@ -295,9 +375,30 @@ func (m *quickTransferModel) View() string {
 			sections = append(sections, "")
 			sections = append(sections, m.styles.HelpText.Render("←/→ or Tab: switch • Enter: confirm • Esc: cancel"))
 
+		case QTStateChooseUploadType:
+			sections = append(sections, m.styles.Label.Render("What do you want to upload?"))
+			sections = append(sections, "")
+
+			var fileBtn, folderBtn string
+			if m.selectedIdx == 0 {
+				fileBtn = m.styles.ActiveTab.Render("  📄 File  ")
+				folderBtn = m.styles.InactiveTab.Render("  📁 Folder  ")
+			} else {
+				fileBtn = m.styles.InactiveTab.Render("  📄 File  ")
+				folderBtn = m.styles.ActiveTab.Render("  📁 Folder  ")
+			}
+			buttons := lipgloss.JoinHorizontal(lipgloss.Center, fileBtn, "    ", folderBtn)
+			sections = append(sections, buttons)
+			sections = append(sections, "")
+			sections = append(sections, m.styles.HelpText.Render("←/→ or Tab: switch • Enter: confirm • Esc: back"))
+
 		case QTStateSelectingLocal:
 			if m.direction == transfer.Upload {
-				sections = append(sections, m.styles.Label.Render("Select file to upload..."))
+				if m.uploadType == UploadFolder {
+					sections = append(sections, m.styles.Label.Render("Select folder to upload..."))
+				} else {
+					sections = append(sections, m.styles.Label.Render("Select file to upload..."))
+				}
 			} else {
 				sections = append(sections, m.styles.Label.Render("Select download destination..."))
 			}

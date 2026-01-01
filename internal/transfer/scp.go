@@ -189,6 +189,83 @@ func (r *TransferRequest) ExecuteWithProgress() *TransferResult {
 	}
 }
 
+// RunningTransfer represents a transfer that can be cancelled
+type RunningTransfer struct {
+	cmd    *exec.Cmd
+	done   chan *TransferResult
+	killed bool
+}
+
+// StartTransfer starts a transfer and returns a RunningTransfer that can be cancelled
+func (r *TransferRequest) StartTransfer() *RunningTransfer {
+	args := []string{}
+
+	// Add recursive flag if needed
+	if r.Recursive {
+		args = append(args, "-r")
+	}
+
+	// Add config file if specified
+	if r.ConfigFile != "" {
+		args = append(args, "-F", r.ConfigFile)
+	}
+
+	// Build source and destination based on direction
+	var source, dest string
+	if r.Direction == Upload {
+		source = r.LocalPath
+		dest = fmt.Sprintf("%s:%s", r.Host, r.RemotePath)
+	} else {
+		source = fmt.Sprintf("%s:%s", r.Host, r.RemotePath)
+		dest = r.LocalPath
+	}
+
+	args = append(args, source, dest)
+
+	cmd := exec.Command("scp", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	rt := &RunningTransfer{
+		cmd:  cmd,
+		done: make(chan *TransferResult, 1),
+	}
+
+	// Start the command
+	if err := cmd.Start(); err != nil {
+		rt.done <- &TransferResult{Success: false, Error: err}
+		return rt
+	}
+
+	// Wait for completion in goroutine
+	go func() {
+		err := cmd.Wait()
+		if rt.killed {
+			rt.done <- &TransferResult{Success: false, Error: fmt.Errorf("transfer cancelled")}
+		} else if err != nil {
+			rt.done <- &TransferResult{Success: false, Error: err}
+		} else {
+			rt.done <- &TransferResult{Success: true}
+		}
+	}()
+
+	return rt
+}
+
+// Cancel kills the running transfer
+func (rt *RunningTransfer) Cancel() {
+	if rt.cmd != nil && rt.cmd.Process != nil {
+		rt.killed = true
+		rt.cmd.Process.Kill()
+	}
+}
+
+// Done returns a channel that receives the result when transfer completes
+func (rt *RunningTransfer) Done() <-chan *TransferResult {
+	return rt.done
+}
+
 // ValidateLocalPath checks if a local path is valid for the given direction
 func ValidateLocalPath(path string, direction Direction) error {
 	if direction == Upload {
