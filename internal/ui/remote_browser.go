@@ -429,6 +429,17 @@ func (m *remoteBrowserModel) Update(msg tea.Msg) (*remoteBrowserModel, tea.Cmd) 
 			}
 			return m, nil
 
+		case "r", "R":
+			// Retry connection / reload current directory
+			m.err = ""
+			m.loading = true
+			// Close existing session to force reconnect
+			if m.session != nil {
+				m.session.Close()
+				m.session = nil
+			}
+			return m, m.loadDirectory(m.currentDir)
+
 		case "enter":
 			if len(m.visibleFiles) == 0 {
 				return m, nil
@@ -610,9 +621,9 @@ func (m *remoteBrowserModel) View() string {
 	if m.searchMode {
 		b.WriteString(" ↑/↓: navigate | Enter: select | Esc: back\n")
 	} else if m.mode == BrowseDirectories {
-		b.WriteString(" ↑/↓: navigate | Enter: open | s: select | .: hidden | Esc: cancel\n")
+		b.WriteString(" ↑/↓: navigate | Enter: open | s: select | r: retry | Esc: cancel\n")
 	} else {
-		b.WriteString(" ↑/↓: navigate | Enter: select | /: search | .: hidden | Esc: cancel\n")
+		b.WriteString(" ↑/↓: navigate | Enter: select | /: search | r: retry | Esc: cancel\n")
 	}
 
 	return b.String()

@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/Gu1llaum-3/sshm/internal/history"
 	"github.com/Gu1llaum-3/sshm/internal/transfer"
@@ -93,6 +94,13 @@ func (m *quickTransferModel) Update(msg tea.Msg) (*quickTransferModel, tea.Cmd) 
 			return m, func() tea.Msg { return quickTransferCancelMsg{} }
 		}
 		m.localPath = msg.path
+
+		if m.direction == transfer.Download {
+			// For downloads: both paths set (remote first, then local), execute transfer
+			m.state = QTStateTransferring
+			return m, m.executeTransfer()
+		}
+		// For uploads: local picked, now ask for remote destination
 		m.state = QTStateSelectingRemote
 		return m, m.openRemotePicker()
 
@@ -102,6 +110,13 @@ func (m *quickTransferModel) Update(msg tea.Msg) (*quickTransferModel, tea.Cmd) 
 			return m, func() tea.Msg { return quickTransferCancelMsg{} }
 		}
 		m.remotePath = msg.path
+
+		if m.direction == transfer.Download {
+			// For downloads: remote picked, now ask for local destination
+			m.state = QTStateSelectingLocal
+			return m, m.openLocalPicker()
+		}
+		// For uploads: both paths set, execute transfer
 		m.state = QTStateTransferring
 		return m, m.executeTransfer()
 
@@ -203,19 +218,28 @@ func (m *quickTransferModel) openRemotePicker() tea.Cmd {
 
 func (m *quickTransferModel) executeTransfer() tea.Cmd {
 	return func() tea.Msg {
-		// Determine if recursive (for directories)
+		localPath := m.localPath
 		recursive := false
+
 		if m.direction == transfer.Upload {
-			info, err := os.Stat(m.localPath)
+			// Check if uploading a directory
+			info, err := os.Stat(localPath)
 			if err == nil && info.IsDir() {
 				recursive = true
+			}
+		} else {
+			// Download: if local path is a directory, append the remote filename
+			info, err := os.Stat(localPath)
+			if err == nil && info.IsDir() {
+				remoteFilename := filepath.Base(m.remotePath)
+				localPath = filepath.Join(localPath, remoteFilename)
 			}
 		}
 
 		req := &transfer.TransferRequest{
 			Host:       m.hostName,
 			Direction:  m.direction,
-			LocalPath:  m.localPath,
+			LocalPath:  localPath,
 			RemotePath: m.remotePath,
 			Recursive:  recursive,
 			ConfigFile: m.configFile,
