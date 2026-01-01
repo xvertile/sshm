@@ -35,6 +35,14 @@ func (m Model) View() string {
 		if m.portForwardForm != nil {
 			return m.portForwardForm.View()
 		}
+	case ViewTransfer:
+		if m.transferForm != nil {
+			return m.transferForm.View()
+		}
+	case ViewQuickTransfer:
+		if m.quickTransferForm != nil {
+			return m.quickTransferForm.View()
+		}
 	case ViewHelp:
 		if m.helpForm != nil {
 			return m.helpForm.View()

@@ -24,12 +24,21 @@ type PortForwardConfig struct {
 	BindAddress string `json:"bind_address"`
 }
 
+// TransferHistoryEntry stores a file transfer record
+type TransferHistoryEntry struct {
+	Direction  string    `json:"direction"` // "upload" or "download"
+	LocalPath  string    `json:"local_path"`
+	RemotePath string    `json:"remote_path"`
+	Timestamp  time.Time `json:"timestamp"`
+}
+
 // ConnectionInfo stores information about a specific connection
 type ConnectionInfo struct {
-	HostName       string             `json:"host_name"`
-	LastConnect    time.Time          `json:"last_connect"`
-	ConnectCount   int                `json:"connect_count"`
-	PortForwarding *PortForwardConfig `json:"port_forwarding,omitempty"`
+	HostName        string                 `json:"host_name"`
+	LastConnect     time.Time              `json:"last_connect"`
+	ConnectCount    int                    `json:"connect_count"`
+	PortForwarding  *PortForwardConfig     `json:"port_forwarding,omitempty"`
+	TransferHistory []TransferHistoryEntry `json:"transfer_history,omitempty"`
 }
 
 // HistoryManager manages the connection history
@@ -303,6 +312,56 @@ func (hm *HistoryManager) RecordPortForwarding(hostName, forwardType, localPort,
 func (hm *HistoryManager) GetPortForwardingConfig(hostName string) *PortForwardConfig {
 	if conn, exists := hm.history.Connections[hostName]; exists {
 		return conn.PortForwarding
+	}
+	return nil
+}
+
+// RecordTransfer saves a file transfer record for a host
+func (hm *HistoryManager) RecordTransfer(hostName, direction, localPath, remotePath string) error {
+	now := time.Now()
+
+	entry := TransferHistoryEntry{
+		Direction:  direction,
+		LocalPath:  localPath,
+		RemotePath: remotePath,
+		Timestamp:  now,
+	}
+
+	if conn, exists := hm.history.Connections[hostName]; exists {
+		// Add to existing history, keep last 10 entries
+		conn.TransferHistory = append([]TransferHistoryEntry{entry}, conn.TransferHistory...)
+		if len(conn.TransferHistory) > 10 {
+			conn.TransferHistory = conn.TransferHistory[:10]
+		}
+		conn.LastConnect = now
+		hm.history.Connections[hostName] = conn
+	} else {
+		// Create new connection record
+		hm.history.Connections[hostName] = ConnectionInfo{
+			HostName:        hostName,
+			LastConnect:     now,
+			ConnectCount:    0,
+			TransferHistory: []TransferHistoryEntry{entry},
+		}
+	}
+
+	return hm.saveHistory()
+}
+
+// GetTransferHistory retrieves the transfer history for a host
+func (hm *HistoryManager) GetTransferHistory(hostName string) []TransferHistoryEntry {
+	if conn, exists := hm.history.Connections[hostName]; exists {
+		return conn.TransferHistory
+	}
+	return nil
+}
+
+// GetLastTransfer retrieves the most recent transfer for a host
+func (hm *HistoryManager) GetLastTransfer(hostName string) *TransferHistoryEntry {
+	if conn, exists := hm.history.Connections[hostName]; exists {
+		if len(conn.TransferHistory) > 0 {
+			return &conn.TransferHistory[0]
+		}
 	}
 	return nil
 }

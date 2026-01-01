@@ -40,6 +40,8 @@ const (
 	ViewMove
 	ViewInfo
 	ViewPortForward
+	ViewTransfer
+	ViewQuickTransfer
 	ViewHelp
 	ViewFileSelector
 )
@@ -88,14 +90,16 @@ type Model struct {
 	currentVersion string
 
 	// View management
-	viewMode         ViewMode
-	addForm          *addFormModel
-	editForm         *editFormModel
-	moveForm         *moveFormModel
-	infoForm         *infoFormModel
-	portForwardForm  *portForwardModel
-	helpForm         *helpModel
-	fileSelectorForm *fileSelectorModel
+	viewMode          ViewMode
+	addForm           *addFormModel
+	editForm          *editFormModel
+	moveForm          *moveFormModel
+	infoForm          *infoFormModel
+	portForwardForm   *portForwardModel
+	transferForm      *transferFormModel
+	quickTransferForm *quickTransferModel
+	helpForm          *helpModel
+	fileSelectorForm  *fileSelectorModel
 
 	// Terminal size and styles
 	width  int

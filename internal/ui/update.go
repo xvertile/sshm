@@ -8,6 +8,7 @@ import (
 
 	"github.com/Gu1llaum-3/sshm/internal/config"
 	"github.com/Gu1llaum-3/sshm/internal/connectivity"
+	"github.com/Gu1llaum-3/sshm/internal/transfer"
 	"github.com/Gu1llaum-3/sshm/internal/version"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -124,6 +125,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.portForwardForm.width = m.width
 			m.portForwardForm.height = m.height
 			m.portForwardForm.styles = m.styles
+		}
+		if m.transferForm != nil {
+			m.transferForm.width = m.width
+			m.transferForm.height = m.height
+			m.transferForm.styles = m.styles
+		}
+		if m.quickTransferForm != nil {
+			m.quickTransferForm.width = m.width
+			m.quickTransferForm.height = m.height
+			m.quickTransferForm.styles = m.styles
 		}
 		if m.helpForm != nil {
 			m.helpForm.width = m.width
@@ -375,6 +386,68 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.table.Focus()
 		return m, nil
 
+	case transferSubmitMsg:
+		if msg.err != nil {
+			// Show error in form
+			if m.transferForm != nil {
+				m.transferForm.err = msg.err.Error()
+			}
+			return m, nil
+		} else {
+			// Success: execute transfer command
+			if msg.request != nil {
+				// Record the transfer in history
+				if m.historyManager != nil {
+					direction := "upload"
+					if msg.request.Direction == transfer.Download {
+						direction = "download"
+					}
+					_ = m.historyManager.RecordTransfer(
+						msg.request.Host,
+						direction,
+						msg.request.LocalPath,
+						msg.request.RemotePath,
+					)
+				}
+
+				// Build and execute scp command
+				scpCmd := msg.request.BuildSCPCommand()
+				return m, tea.ExecProcess(scpCmd, func(err error) tea.Msg {
+					return tea.Quit()
+				})
+			}
+
+			// If no request, just return to list view
+			m.viewMode = ViewList
+			m.transferForm = nil
+			m.table.Focus()
+			return m, nil
+		}
+
+	case transferCancelMsg:
+		// Cancel: return to list view
+		m.viewMode = ViewList
+		m.transferForm = nil
+		m.table.Focus()
+		return m, nil
+
+	case quickTransferCancelMsg:
+		// Quick transfer cancelled or done: return to list view
+		m.viewMode = ViewList
+		m.quickTransferForm = nil
+		m.table.Focus()
+		return m, nil
+
+	case quickLocalPickedMsg, quickRemotePickedMsg, quickTransferDoneMsg:
+		// Route quick transfer async messages to the form
+		if m.viewMode == ViewQuickTransfer && m.quickTransferForm != nil {
+			var newForm *quickTransferModel
+			newForm, cmd = m.quickTransferForm.Update(msg)
+			m.quickTransferForm = newForm
+			return m, cmd
+		}
+		return m, nil
+
 	case helpCloseMsg:
 		// Close help: return to list view
 		m.viewMode = ViewList
@@ -418,6 +491,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				var newForm *portForwardModel
 				newForm, cmd = m.portForwardForm.Update(msg)
 				m.portForwardForm = newForm
+				return m, cmd
+			}
+		case ViewTransfer:
+			if m.transferForm != nil {
+				var newForm *transferFormModel
+				newForm, cmd = m.transferForm.Update(msg)
+				m.transferForm = newForm
+				return m, cmd
+			}
+		case ViewQuickTransfer:
+			if m.quickTransferForm != nil {
+				var newForm *quickTransferModel
+				newForm, cmd = m.quickTransferForm.Update(msg)
+				m.quickTransferForm = newForm
 				return m, cmd
 			}
 		case ViewHelp:
@@ -696,6 +783,17 @@ func (m Model) handleListViewKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.portForwardForm = NewPortForwardForm(hostName, m.styles, m.width, m.height, m.configFile, m.historyManager)
 				m.viewMode = ViewPortForward
 				return m, textinput.Blink
+			}
+		}
+	case "t":
+		if !m.searchMode && !m.deleteMode {
+			// Quick file transfer for the selected host
+			selected := m.table.SelectedRow()
+			if len(selected) > 0 {
+				hostName := extractHostNameFromTableRow(selected[0])
+				m.quickTransferForm = NewQuickTransfer(hostName, m.styles, m.width, m.height, m.configFile)
+				m.viewMode = ViewQuickTransfer
+				return m, nil
 			}
 		}
 	case "h":

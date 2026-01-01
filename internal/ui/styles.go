@@ -44,6 +44,13 @@ type Styles struct {
 	Label         lipgloss.Style
 	FocusedLabel  lipgloss.Style
 	HelpSection   lipgloss.Style
+
+	// Tab styles (for toggle buttons)
+	ActiveTab   lipgloss.Style
+	InactiveTab lipgloss.Style
+
+	// File browser styles
+	DirStyle lipgloss.Style
 }
 
 // NewStyles creates a new Styles struct with the given terminal width
@@ -128,6 +135,21 @@ func NewStyles(width int) Styles {
 
 		HelpSection: lipgloss.NewStyle().
 			Padding(0, 2),
+
+		// Tab styles
+		ActiveTab: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFDF5")).
+			Background(lipgloss.Color(PrimaryColor)).
+			Padding(0, 2).
+			Bold(true),
+
+		InactiveTab: lipgloss.NewStyle().
+			Foreground(lipgloss.Color(SecondaryColor)).
+			Background(lipgloss.Color("#333333")).
+			Padding(0, 2),
+
+		DirStyle: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("39")),
 	}
 }
 
